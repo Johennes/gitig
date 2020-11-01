@@ -1,0 +1,233 @@
+#!/bin/bash
+
+# Copyright 2020 Johannes Marbach
+#
+# This file is part of GitiG, hereafter referred to as the program.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+function usage {
+  echo "Usage: gitig [-h]"
+  echo ""
+  echo "Mirrors the git repository in the current directory to various services. If" \
+    "the mirrored repository doesn't exist yet, it is created, otherwise it's updated."
+  echo ""
+  echo "To read the repository description from Gitea (assuming the remote points to a" \
+    "Gitea insance), export the following variables in your shell environment:"
+  echo "  GITIG_GITEA_ACCESS_TOKEN"
+  echo ""
+  echo "Reading the description from other services is not yet supported."
+  echo ""
+  echo "To mirror to GitHub, export the following variables in your shell environment:"
+  echo "  GITIG_GITHUB_USERNAME"
+  echo "  GITIG_GITHUB_ACCESS_TOKEN"
+  echo ""
+  echo "To mirror to GitLab, export the following variables in your shell environment:"
+  echo "  GITIG_GITLAB_USERNAME"
+  echo "  GITIG_GITLAB_ACCESS_TOKEN"
+  echo ""
+  echo "Options:"
+  echo "  -h  Print this message and exit"
+}
+
+function announce {
+  echo -e "\e[94m$1\e[39m"
+}
+
+function die {
+  echo -e "\e[31mError: $1\e[39m" 1>&2
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "Unknown option $1"
+      ;;
+  esac
+done
+
+announce "Querying repository details..."
+
+remote=$(git config remote.origin.url)
+if [[ -z $remote ]]; then
+  die "Could not determine remote URL. Are you sure this is a git repository?"
+fi
+
+root=$(echo "$remote" | sed 's|/[^/]*$||' | sed 's|/[^/]*$||')
+url=$(echo "$remote" | sed 's|://[^@]*@|://|' | sed 's/\.git$//')
+
+owner=$(echo "$remote" | sed 's|/[^/]*$||' | grep -o '/[^/]*$' | sed 's|^/||')
+if [[ -z $owner ]]; then
+  die "Could not determine repository owner from $remote"
+fi
+
+name=$(echo "$remote" | grep -o '/[^/]*\.git' | sed 's/^\///' | sed 's/\.git$//')
+if [[ -z $name ]]; then
+  die "Could not determine repository name from $remote"
+fi
+
+if [[ ! -z $GITIG_GITEA_ACCESS_TOKEN ]]; then
+  description=$(curl -s "$root/api/v1/repos/$owner/$name" \
+    -H "accept: application/json" \
+    -H "Authorization: token $GITIG_GITEA_ACCESS_TOKEN" \
+    | grep -o '"description":\s*"[^"]*"' | sed 's/"description":\s*"//' | sed 's/"$//')
+  description=$(echo -e "$description") # Resolve \u escape sequences
+fi
+
+echo "URL: $url"
+echo "Owner: $owner"
+echo "Name: $name"
+echo "Description: $description"
+
+mirror_description="Mirror of $url"
+if [[ ! -z "$description" ]]; then
+  mirror_description="$description ($mirror_description)"
+fi
+
+git fetch --prune
+
+if [[ ! -z $GITIG_GITHUB_ACCESS_TOKEN && ! -z $GITIG_GITHUB_USERNAME ]]; then
+  announce "Updating GitHub mirror..."
+
+  status=$(curl -o /dev/null -s -w "%{http_code}\n" \
+    -H "Authorization: token $GITIG_GITHUB_ACCESS_TOKEN" \
+    -H "Accept: application/vnd.github.v3+json" \
+    https://api.github.com/repos/$GITIG_GITHUB_USERNAME/$name)
+
+  if [[ $status == 200 ]]; then
+    echo "Found, updating..."
+
+    status=$(curl -o /dev/null -s -w "%{http_code}\n" \
+      -X PATCH \
+      -H "Authorization: token $GITIG_GITHUB_ACCESS_TOKEN" \
+      -H "Accept: application/vnd.github.v3+json" \
+      -d "{\
+        \"name\": \"$name\", \
+        \"description\": \"$mirror_description\", \
+        \"homepage\": null, \
+        \"private\": false, \
+        \"has_issues\": true, \
+        \"has_projects\": false, \
+        \"has_wiki\": false, \
+        \"is_template\": false, \
+        \"auto_init\": false \
+      }" \
+      https://api.github.com/repos/$GITIG_GITHUB_USERNAME/$name)
+    
+    if [[ $status == 200 ]]; then
+      echo "Success"
+    else
+      die "Could not update GitHub repository, status $status"
+    fi
+  else
+    echo "Not found, creating..."
+
+    status=$(curl -o /dev/null -s -w "%{http_code}\n" \
+      -X POST \
+      -H "Authorization: token $GITIG_GITHUB_ACCESS_TOKEN" \
+      -H "Accept: application/vnd.github.v3+json" \
+      -d "{\
+        \"name\": \"$name\", \
+        \"description\": \"$mirror_description\", \
+        \"homepage\": null, \
+        \"private\": false, \
+        \"has_issues\": true, \
+        \"has_projects\": false, \
+        \"has_wiki\": false, \
+        \"is_template\": false, \
+        \"auto_init\": false \
+      }" \
+      https://api.github.com/user/repos)
+    
+    if [[ $status == 201 ]]; then
+      echo "Success"
+    else
+      die "Could not create GitHub repository, status $status"
+    fi
+  fi
+
+  git push --prune \
+    https://$GITIG_GITHUB_ACCESS_TOKEN:x-oauth-basic@github.com/$GITIG_GITHUB_USERNAME/$name.git \
+    +refs/remotes/origin/*:refs/heads/* \
+    +refs/tags/*:refs/tags/*
+  echo "Mirror: https://github.com/$GITIG_GITHUB_USERNAME/$name"
+fi
+
+if [[ ! -z $GITIG_GITLAB_ACCESS_TOKEN && ! -z $GITIG_GITLAB_USERNAME ]]; then
+  announce "Updating GitLab mirror..."
+
+  status=$(curl -o /dev/null -s -w "%{http_code}\n" \
+    -H "Authorization: Bearer $GITIG_GITLAB_ACCESS_TOKEN" \
+    -H "Accept: application/json" \
+    https://gitlab.com/api/v4/projects/$GITIG_GITLAB_USERNAME%2F${name//./-})
+
+  if [[ $status == 200 ]]; then
+    echo "Found, updating..."
+
+    status=$(curl -o /dev/null -s -w "%{http_code}\n" \
+      -X PUT \
+      -H "Authorization: Bearer $GITIG_GITLAB_ACCESS_TOKEN" \
+      -H "Accept: application/json" \
+      -G \
+      --data-urlencode "name=$name" \
+      --data-urlencode "description=$mirror_description" \
+      --data-urlencode "issues_access_level=enabled" \
+      --data-urlencode "repository_access_level=enabled" \
+      --data-urlencode "wiki_access_level=disabled" \
+      --data-urlencode "snippets_access_level=disabled" \
+      --data-urlencode "pages_access_level=disabled" \
+      --data-urlencode "visibility=public" \
+      https://gitlab.com/api/v4/projects/$GITIG_GITLAB_USERNAME%2F${name//./-})
+    
+    if [[ $status == 200 ]]; then
+      echo "Success"
+    else
+      die "Could not update GitLab repository, status $status"
+    fi
+  else
+    echo "Not found, creating..."
+
+    status=$(curl -o /dev/null -s -w "%{http_code}\n" \
+      -X POST \
+      -H "Authorization: Bearer $GITIG_GITLAB_ACCESS_TOKEN" \
+      -H "Accept: application/json" \
+      -G \
+      --data-urlencode "name=$name" \
+      --data-urlencode "description=$mirror_description" \
+      --data-urlencode "issues_access_level=enabled" \
+      --data-urlencode "repository_access_level=enabled" \
+      --data-urlencode "wiki_access_level=disabled" \
+      --data-urlencode "snippets_access_level=disabled" \
+      --data-urlencode "pages_access_level=disabled" \
+      --data-urlencode "visibility=public" \
+      https://gitlab.com/api/v4/projects)
+
+    if [[ $status == 201 ]]; then
+      echo "Success"
+    else
+      die "Could not create GitLab repository, status $status"
+    fi
+  fi
+
+  git push --prune \
+    https://oauth2:$GITIG_GITLAB_ACCESS_TOKEN@gitlab.com/$GITIG_GITLAB_USERNAME/${name//./-}.git \
+    +refs/remotes/origin/*:refs/heads/* \
+    +refs/tags/*:refs/tags/*
+  echo "Mirror: https://gitlab.com/$GITIG_GITLAB_USERNAME/${name//./-}"
+fi
