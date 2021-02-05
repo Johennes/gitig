@@ -45,6 +45,10 @@ function announce {
   echo -e "\e[94m$1\e[39m"
 }
 
+function warn {
+  echo -e "\e[33m$1\e[39m"
+}
+
 function die {
   echo -e "\e[31mError: $1\e[39m" 1>&2
   exit 1
@@ -102,131 +106,139 @@ fi
 
 git fetch --prune
 
-if [[ ! -z $GITIG_GITHUB_ACCESS_TOKEN && ! -z $GITIG_GITHUB_USERNAME ]]; then
+if [[ ! -z $GITIG_GITHUB_USERNAME ]]; then
   announce "Updating GitHub mirror..."
 
-  status=$(curl -o /dev/null -s -w "%{http_code}\n" \
-    -H "Authorization: token $GITIG_GITHUB_ACCESS_TOKEN" \
-    -H "Accept: application/vnd.github.v3+json" \
-    https://api.github.com/repos/$GITIG_GITHUB_USERNAME/$name)
-
-  if [[ $status == 200 ]]; then
-    echo "Found, updating..."
-
-    status=$(curl -o /dev/null -s -w "%{http_code}\n" \
-      -X PATCH \
-      -H "Authorization: token $GITIG_GITHUB_ACCESS_TOKEN" \
-      -H "Accept: application/vnd.github.v3+json" \
-      -d "{\
-        \"name\": \"$name\", \
-        \"description\": \"$mirror_description\", \
-        \"homepage\": null, \
-        \"private\": false, \
-        \"has_issues\": true, \
-        \"has_projects\": false, \
-        \"has_wiki\": false, \
-        \"is_template\": false, \
-        \"auto_init\": false \
-      }" \
-      https://api.github.com/repos/$GITIG_GITHUB_USERNAME/$name)
-    
-    if [[ $status == 200 ]]; then
-      echo "Success"
-    else
-      die "Could not update GitHub repository, status $status"
-    fi
+  if [[ -z $GITIG_GITHUB_ACCESS_TOKEN ]]; then
+    echo "Cannot create / update repository metadata. GITIG_GITHUB_ACCESS_TOKEN is unset."
   else
-    echo "Not found, creating..."
-
     status=$(curl -o /dev/null -s -w "%{http_code}\n" \
-      -X POST \
       -H "Authorization: token $GITIG_GITHUB_ACCESS_TOKEN" \
       -H "Accept: application/vnd.github.v3+json" \
-      -d "{\
-        \"name\": \"$name\", \
-        \"description\": \"$mirror_description\", \
-        \"homepage\": null, \
-        \"private\": false, \
-        \"has_issues\": true, \
-        \"has_projects\": false, \
-        \"has_wiki\": false, \
-        \"is_template\": false, \
-        \"auto_init\": false \
-      }" \
-      https://api.github.com/user/repos)
-    
-    if [[ $status == 201 ]]; then
-      echo "Success"
+      https://api.github.com/repos/$GITIG_GITHUB_USERNAME/$name)
+
+    if [[ $status == 200 ]]; then
+      echo "Found, updating..."
+
+      status=$(curl -o /dev/null -s -w "%{http_code}\n" \
+        -X PATCH \
+        -H "Authorization: token $GITIG_GITHUB_ACCESS_TOKEN" \
+        -H "Accept: application/vnd.github.v3+json" \
+        -d "{\
+          \"name\": \"$name\", \
+          \"description\": \"$mirror_description\", \
+          \"homepage\": null, \
+          \"private\": false, \
+          \"has_issues\": true, \
+          \"has_projects\": false, \
+          \"has_wiki\": false, \
+          \"is_template\": false, \
+          \"auto_init\": false \
+        }" \
+        https://api.github.com/repos/$GITIG_GITHUB_USERNAME/$name)
+
+      if [[ $status == 200 ]]; then
+        echo "Success"
+      else
+        die "Could not update GitHub repository, status $status"
+      fi
     else
-      die "Could not create GitHub repository, status $status"
+      echo "Not found, creating..."
+
+      status=$(curl -o /dev/null -s -w "%{http_code}\n" \
+        -X POST \
+        -H "Authorization: token $GITIG_GITHUB_ACCESS_TOKEN" \
+        -H "Accept: application/vnd.github.v3+json" \
+        -d "{\
+          \"name\": \"$name\", \
+          \"description\": \"$mirror_description\", \
+          \"homepage\": null, \
+          \"private\": false, \
+          \"has_issues\": true, \
+          \"has_projects\": false, \
+          \"has_wiki\": false, \
+          \"is_template\": false, \
+          \"auto_init\": false \
+        }" \
+        https://api.github.com/user/repos)
+      
+      if [[ $status == 201 ]]; then
+        echo "Success"
+      else
+        die "Could not create GitHub repository, status $status"
+      fi
     fi
   fi
 
   git push --prune \
-    https://$GITIG_GITHUB_ACCESS_TOKEN:x-oauth-basic@github.com/$GITIG_GITHUB_USERNAME/$name.git \
+    git@github.com:$GITIG_GITHUB_USERNAME/$name.git \
     +refs/remotes/origin/*:refs/heads/* \
     +refs/tags/*:refs/tags/*
   echo "Mirror: https://github.com/$GITIG_GITHUB_USERNAME/$name"
 fi
 
-if [[ ! -z $GITIG_GITLAB_ACCESS_TOKEN && ! -z $GITIG_GITLAB_USERNAME ]]; then
+if [[ ! -z $GITIG_GITLAB_USERNAME ]]; then
   announce "Updating GitLab mirror..."
 
-  status=$(curl -o /dev/null -s -w "%{http_code}\n" \
-    -H "Authorization: Bearer $GITIG_GITLAB_ACCESS_TOKEN" \
-    -H "Accept: application/json" \
-    https://gitlab.com/api/v4/projects/$GITIG_GITLAB_USERNAME%2F${name//./-})
-
-  if [[ $status == 200 ]]; then
-    echo "Found, updating..."
-
-    status=$(curl -o /dev/null -s -w "%{http_code}\n" \
-      -X PUT \
-      -H "Authorization: Bearer $GITIG_GITLAB_ACCESS_TOKEN" \
-      -H "Accept: application/json" \
-      -G \
-      --data-urlencode "name=$name" \
-      --data-urlencode "description=$mirror_description" \
-      --data-urlencode "issues_access_level=enabled" \
-      --data-urlencode "repository_access_level=enabled" \
-      --data-urlencode "wiki_access_level=disabled" \
-      --data-urlencode "snippets_access_level=disabled" \
-      --data-urlencode "pages_access_level=disabled" \
-      --data-urlencode "visibility=public" \
-      https://gitlab.com/api/v4/projects/$GITIG_GITLAB_USERNAME%2F${name//./-})
-    
-    if [[ $status == 200 ]]; then
-      echo "Success"
-    else
-      die "Could not update GitLab repository, status $status"
-    fi
+  if [[ -z $GITIG_GITLAB_ACCESS_TOKEN ]]; then
+    echo "Cannot create / update repository metadata. GITIG_GITLAB_ACCESS_TOKEN is unset."
   else
-    echo "Not found, creating..."
-
     status=$(curl -o /dev/null -s -w "%{http_code}\n" \
-      -X POST \
       -H "Authorization: Bearer $GITIG_GITLAB_ACCESS_TOKEN" \
       -H "Accept: application/json" \
-      -G \
-      --data-urlencode "name=$name" \
-      --data-urlencode "description=$mirror_description" \
-      --data-urlencode "issues_access_level=enabled" \
-      --data-urlencode "repository_access_level=enabled" \
-      --data-urlencode "wiki_access_level=disabled" \
-      --data-urlencode "snippets_access_level=disabled" \
-      --data-urlencode "pages_access_level=disabled" \
-      --data-urlencode "visibility=public" \
-      https://gitlab.com/api/v4/projects)
+      https://gitlab.com/api/v4/projects/$GITIG_GITLAB_USERNAME%2F${name//./-})
 
-    if [[ $status == 201 ]]; then
-      echo "Success"
+    if [[ $status == 200 ]]; then
+      echo "Found, updating..."
+
+      status=$(curl -o /dev/null -s -w "%{http_code}\n" \
+        -X PUT \
+        -H "Authorization: Bearer $GITIG_GITLAB_ACCESS_TOKEN" \
+        -H "Accept: application/json" \
+        -G \
+        --data-urlencode "name=$name" \
+        --data-urlencode "description=$mirror_description" \
+        --data-urlencode "issues_access_level=enabled" \
+        --data-urlencode "repository_access_level=enabled" \
+        --data-urlencode "wiki_access_level=disabled" \
+        --data-urlencode "snippets_access_level=disabled" \
+        --data-urlencode "pages_access_level=disabled" \
+        --data-urlencode "visibility=public" \
+        https://gitlab.com/api/v4/projects/$GITIG_GITLAB_USERNAME%2F${name//./-})
+      
+      if [[ $status == 200 ]]; then
+        echo "Success"
+      else
+        die "Could not update GitLab repository, status $status"
+      fi
     else
-      die "Could not create GitLab repository, status $status"
+      echo "Not found, creating..."
+
+      status=$(curl -o /dev/null -s -w "%{http_code}\n" \
+        -X POST \
+        -H "Authorization: Bearer $GITIG_GITLAB_ACCESS_TOKEN" \
+        -H "Accept: application/json" \
+        -G \
+        --data-urlencode "name=$name" \
+        --data-urlencode "description=$mirror_description" \
+        --data-urlencode "issues_access_level=enabled" \
+        --data-urlencode "repository_access_level=enabled" \
+        --data-urlencode "wiki_access_level=disabled" \
+        --data-urlencode "snippets_access_level=disabled" \
+        --data-urlencode "pages_access_level=disabled" \
+        --data-urlencode "visibility=public" \
+        https://gitlab.com/api/v4/projects)
+
+      if [[ $status == 201 ]]; then
+        echo "Success"
+      else
+        die "Could not create GitLab repository, status $status"
+      fi
     fi
   fi
 
   git push --prune \
-    https://oauth2:$GITIG_GITLAB_ACCESS_TOKEN@gitlab.com/$GITIG_GITLAB_USERNAME/${name//./-}.git \
+    git@gitlab.com:$GITIG_GITLAB_USERNAME/${name//./-}.git \
     +refs/remotes/origin/*:refs/heads/* \
     +refs/tags/*:refs/tags/*
   echo "Mirror: https://gitlab.com/$GITIG_GITLAB_USERNAME/${name//./-}"
